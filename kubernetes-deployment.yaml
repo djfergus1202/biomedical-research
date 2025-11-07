@@ -1,0 +1,160 @@
+# kubernetes-deployment.yaml
+# Kubernetes Deployment for BioMed Research Suite
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: biomed-suite-backend
+  labels:
+    app: biomed-suite
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: biomed-suite
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: biomed-suite
+        component: backend
+    spec:
+      containers:
+      - name: backend
+        image: biomed-suite:latest
+        ports:
+        - containerPort: 5000
+        env:
+        - name: PORT
+          value: "5000"
+        - name: FLASK_ENV
+          value: "production"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+# Service to expose the backend
+apiVersion: v1
+kind: Service
+metadata:
+  name: biomed-suite-service
+  labels:
+    app: biomed-suite
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+  selector:
+    app: biomed-suite
+    component: backend
+---
+# ConfigMap for frontend files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: biomed-suite-frontend
+data:
+  nginx.conf: |
+    server {
+        listen 80;
+        server_name _;
+        
+        location / {
+            root /usr/share/nginx/html;
+            index biomed_suite_pro.html;
+            try_files $uri $uri/ /biomed_suite_pro.html;
+        }
+        
+        location /api {
+            proxy_pass http://biomed-suite-service:80;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+        }
+    }
+---
+# Frontend Deployment (nginx serving HTML)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: biomed-suite-frontend
+  labels:
+    app: biomed-suite
+    component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: biomed-suite
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: biomed-suite
+        component: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: html-files
+          mountPath: /usr/share/nginx/html
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: html-files
+        configMap:
+          name: frontend-html
+      - name: nginx-config
+        configMap:
+          name: biomed-suite-frontend
+          items:
+          - key: nginx.conf
+            path: default.conf
+---
+# Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: biomed-suite-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: biomed-suite-frontend
+            port:
+              number: 80
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: biomed-suite-service
+            port:
+              number: 80
